@@ -6,15 +6,20 @@ package consul
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	consulapi "github.com/hashicorp/consul/api"
 
 	"github.com/hashicorp/terraform/internal/backend"
 	"github.com/hashicorp/terraform/internal/states/remote"
@@ -491,4 +496,74 @@ func (u *unreliableConns) Kill() {
 		conn.(*net.TCPConn).SetDeadline(time.Now())
 	}
 	u.conns = nil
+}
+
+func TestChunkedMode_missingChunks(t *testing.T) {
+	// Simulate corrupt chunked state data: has "current-hash" but no "chunks" array.
+	// Before the fix, this caused a nil pointer panic on the type assertion.
+	corruptData := `{"current-hash": "abc123"}`
+	encodedValue := base64.StdEncoding.EncodeToString([]byte(corruptData))
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Consul-Index", "1")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `[{"CreateIndex":1,"ModifyIndex":2,"LockIndex":0,"Key":"test","Flags":0,"Value":"%s","Session":""}]`, encodedValue)
+	}))
+	defer ts.Close()
+
+	client, err := consulapi.NewClient(&consulapi.Config{
+		Address: ts.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc := &RemoteClient{
+		Client: client,
+		Path:   "test",
+	}
+
+	_, _, _, _, err = rc.chunkedMode()
+	if err == nil {
+		t.Fatal("expected error for missing chunks array, got nil")
+	}
+	if !strings.Contains(err.Error(), "chunks") {
+		t.Fatalf("expected error about chunks, got: %s", err)
+	}
+}
+
+func TestChunkedMode_nonStringHash(t *testing.T) {
+	// Simulate corrupt chunked state data: "current-hash" is not a string.
+	// Before the fix, this caused a panic on the type assertion.
+	corruptData := `{"current-hash": 12345, "chunks": ["path/0"]}`
+	encodedValue := base64.StdEncoding.EncodeToString([]byte(corruptData))
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Consul-Index", "1")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `[{"CreateIndex":1,"ModifyIndex":2,"LockIndex":0,"Key":"test","Flags":0,"Value":"%s","Session":""}]`, encodedValue)
+	}))
+	defer ts.Close()
+
+	client, err := consulapi.NewClient(&consulapi.Config{
+		Address: ts.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc := &RemoteClient{
+		Client: client,
+		Path:   "test",
+	}
+
+	_, _, _, _, err = rc.chunkedMode()
+	if err == nil {
+		t.Fatal("expected error for non-string hash, got nil")
+	}
+	if !strings.Contains(err.Error(), "current-hash") {
+		t.Fatalf("expected error about current-hash, got: %s", err)
+	}
 }

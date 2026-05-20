@@ -1,0 +1,5 @@
+kind: BUG FIXES
+body: 'backend/oss,consul: Fixed panics that could occur when the OSS backend received unexpected responses from the ECS metadata endpoint or an invalid profile configuration file, or when the Consul backend encountered corrupt chunked state data.'
+time: 2026-05-20T00:55:57.000000+00:00
+custom:
+    Issue: ""

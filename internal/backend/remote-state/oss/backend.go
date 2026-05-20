@@ -594,9 +594,17 @@ func getConfigFromProfile(d *schema.ResourceData, ProfileKey string) (interface{
 			if err != nil {
 				return nil, err
 			}
-			for _, v := range config["profiles"].([]interface{}) {
-				if current == v.(map[string]interface{})["name"] {
-					providerConfig = v.(map[string]interface{})
+			profiles, ok := config["profiles"].([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("shared credentials file %s is missing a valid 'profiles' array", profilePath)
+			}
+			for _, v := range profiles {
+				profileMap, ok := v.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if current == profileMap["name"] {
+					providerConfig = profileMap
 				}
 			}
 		}
@@ -681,7 +689,12 @@ func getAuthCredentialByEcsRoleName(ecsRoleName string) (accessKey, secretKey, t
 		err = fmt.Errorf("refresh Ecs sts token err, fail to get Code: %s", err.Error())
 		return
 	}
-	if code.(string) != "Success" {
+	codeStr, ok := code.(string)
+	if !ok {
+		err = fmt.Errorf("refresh Ecs sts token err, Code is not a valid string")
+		return
+	}
+	if codeStr != "Success" {
 		err = fmt.Errorf("refresh Ecs sts token err, Code is not Success")
 		return
 	}
@@ -706,7 +719,22 @@ func getAuthCredentialByEcsRoleName(ecsRoleName string) (accessKey, secretKey, t
 		return
 	}
 
-	return accessKeyId.(string), accessKeySecret.(string), securityToken.(string), nil
+	accessKeyStr, ok := accessKeyId.(string)
+	if !ok {
+		err = fmt.Errorf("refresh Ecs sts token err, AccessKeyId is not a valid string")
+		return
+	}
+	secretKeyStr, ok := accessKeySecret.(string)
+	if !ok {
+		err = fmt.Errorf("refresh Ecs sts token err, AccessKeySecret is not a valid string")
+		return
+	}
+	tokenStr, ok := securityToken.(string)
+	if !ok {
+		err = fmt.Errorf("refresh Ecs sts token err, SecurityToken is not a valid string")
+		return
+	}
+	return accessKeyStr, secretKeyStr, tokenStr, nil
 }
 
 func getHttpProxyUrl(rawUrl string) (*url.URL, error) {

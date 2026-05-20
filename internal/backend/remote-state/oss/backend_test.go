@@ -6,6 +6,8 @@ package oss
 import (
 	"fmt"
 	"math/rand"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/aliyun/aliyun-tablestore-go-sdk/tablestore"
 	"github.com/hashicorp/terraform/internal/backend"
 	"github.com/hashicorp/terraform/internal/configs/hcl2shim"
+	"github.com/hashicorp/terraform/internal/legacy/helper/schema"
 )
 
 // verify that we are doing ACC tests or the OSS tests specifically
@@ -249,6 +252,94 @@ func deleteTablestoreTable(t *testing.T, otsClient *tablestore.TableStoreClient,
 	_, err := otsClient.DeleteTable(params)
 	if err != nil {
 		t.Logf("WARNING: Failed to delete the test TableStore table %q. It has been left in your Alibaba Cloud account and may incur charges. (error was %s)", tableName, err)
+	}
+}
+
+func TestGetAuthCredentialByEcsRoleName_missingCodeField(t *testing.T) {
+	// httptest server returns valid JSON but without the "Code" field.
+	// Before the fix, this caused a nil pointer panic on the type assertion.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"AccessKeyId": "ak", "AccessKeySecret": "sk", "SecurityToken": "token"}`))
+	}))
+	defer ts.Close()
+
+	origURL := securityCredURL
+	securityCredURL = ts.URL + "/"
+	defer func() { securityCredURL = origURL }()
+
+	_, _, _, err := getAuthCredentialByEcsRoleName("test-role")
+	if err == nil {
+		t.Fatal("expected error for missing Code field, got nil")
+	}
+	if !strings.Contains(err.Error(), "Code") {
+		t.Fatalf("expected error about Code field, got: %s", err)
+	}
+}
+
+func TestGetAuthCredentialByEcsRoleName_nonStringFields(t *testing.T) {
+	// httptest server returns JSON where credential fields are non-string types.
+	// Before the fix, this caused a panic on the type assertion.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"Code": "Success", "AccessKeyId": 12345, "AccessKeySecret": "sk", "SecurityToken": "token"}`))
+	}))
+	defer ts.Close()
+
+	origURL := securityCredURL
+	securityCredURL = ts.URL + "/"
+	defer func() { securityCredURL = origURL }()
+
+	_, _, _, err := getAuthCredentialByEcsRoleName("test-role")
+	if err == nil {
+		t.Fatal("expected error for non-string AccessKeyId, got nil")
+	}
+	if !strings.Contains(err.Error(), "AccessKeyId") {
+		t.Fatalf("expected error about AccessKeyId, got: %s", err)
+	}
+}
+
+func TestGetConfigFromProfile_missingProfiles(t *testing.T) {
+	// Reset the global providerConfig cache
+	origConfig := providerConfig
+	providerConfig = nil
+	defer func() { providerConfig = origConfig }()
+
+	// Create a temp config file without "profiles" key
+	tmpFile, err := os.CreateTemp("", "aliyun-config-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write([]byte(`{"current": "default"}`)); err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close()
+
+	// Create ResourceData with required schema fields
+	d := schema.TestResourceDataRaw(t, map[string]*schema.Schema{
+		"profile": {
+			Type:     schema.TypeString,
+			Optional: true,
+		},
+		"shared_credentials_file": {
+			Type:     schema.TypeString,
+			Optional: true,
+		},
+	}, map[string]interface{}{
+		"profile":                 "default",
+		"shared_credentials_file": tmpFile.Name(),
+	})
+
+	_, err = getConfigFromProfile(d, "access_key_id")
+	if err == nil {
+		t.Fatal("expected error for missing profiles key, got nil")
+	}
+	if !strings.Contains(err.Error(), "profiles") {
+		t.Fatalf("expected error about missing profiles, got: %s", err)
 	}
 }
 
